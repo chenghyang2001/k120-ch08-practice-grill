@@ -1,6 +1,6 @@
 # 數獨 Python App 規格書（v1）
 
-> 狀態：**待確認**　｜　來源：2026-10-06 grill-me-dev 訪談 13 項決策
+> 狀態：**v1 已實作**（2026-10-06，commit 652dfee）　｜　來源：2026-10-06 grill-me-dev 訪談＋實作期間決策，共 16 項
 
 ## 1. 目標
 
@@ -27,6 +27,7 @@
 | 13 | 流程 | 規格先行 → 四批實作，每批 code-writer → code-qa → code-reviewer |
 | 14 | 題號 | 題號與難度綁定：亂數用 `Random(f"{difficulty.name}:{seed}")`，GUI 顯示「困難 #17」 |
 | 15 | 提示格顯示 | 提示填入的格子以綠色粗體顯示，由 `GameSession.is_hinted()` 判斷 |
+| 16 | v1 GUI 細節 | 見 §6「實作補充」：盤面數字字型、狀態列訊息、提示後選格、方向鍵起點等 |
 
 環境：`requires-python = ">=3.12"`（開發機為 3.14.7、uv 0.12.23）。
 
@@ -44,17 +45,23 @@ k120-ch08-practice-grill/
 │   ├── game.py
 │   └── gui/
 │       ├── __init__.py
+│       ├── layout.py       # 純函式：座標換算、選格移動、文字格式、格子樣式（不 import tkinter）
 │       └── app.py
 └── tests/
     ├── test_board.py
     ├── test_solver.py
     ├── test_generator.py
-    └── test_game.py
+    ├── test_game.py
+    ├── test_layout.py
+    └── test_app_smoke.py   # 共用單一 Tk root 的 GUI 冒煙測試
 ```
 
 相依方向（不可反向）：
 
 ```
+gui/app.py ──▶ gui/layout.py
+     │              │
+     ▼              ▼
 gui/app.py ──▶ game.py ──▶ board.py
                   │            ▲
                   └──▶ generator.py ──▶ solver.py
@@ -203,9 +210,20 @@ class GameSession:
 - **顏色**：給定格黑色粗體、提示格綠色粗體、玩家填入藍色、衝突數字紅色、「檢查」後錯格紅底（下次修改時清除）
 - **格線**：宮界粗線、格界細線
 - 點擊座標→行列換算為純函式 `pixel_to_cell(x, y, cell_size, margin) -> tuple[int, int] | None`，可單元測試
-- 出題時游標 `watch`；完成時跳訊息框顯示用時與提示次數
+- 出題時游標 `watch`；SOLVED 時跳訊息框顯示用時與提示次數（GAVE_UP 見下方實作補充）
 - 題號顯示格式：「{難度 label} #{seed}」
 - 每個改動盤面的操作後統一呼叫 `_after_action()`：重繪、更新按鈕啟用狀態（can_undo / can_redo / is_over）、偵測 state 離開 PLAYING 時停表並跳訊息
+
+### 6.1 實作補充（決策 16，第 4 批 code review 確認合理）
+
+- **盤面數字字型**：用 Segoe UI 一般／粗體兩個具名字型。Microsoft JhengHei 的數字粗細兩種字重幾乎無差別，會讓提示格（綠粗）與玩家格（藍細）分不清；按鈕、標籤等中文介面仍用 Microsoft JhengHei。非 Windows 平台找不到 Segoe UI 時由 Tk 自動替代
+- **自動解**：不跳對話框，只在狀態列顯示「已自動解，本局不計成績」
+- **檢查**：結果寫在狀態列（例如「發現 2 個錯誤」），不另跳視窗
+- **提示**：提示後自動選取被提示的格子，方便玩家找到位置
+- **方向鍵**：尚未選格時第一次按方向鍵，先選左上角 (0,0)，不移動
+- **衝突的給定格**：數字變紅但保持粗體，保留「題目原有數字」的資訊
+- **出題失敗**：保留原本這局並跳錯誤訊息
+- **提示亂數**：預設 `random.Random(f"hint:{puzzle.seed}")`，與出題亂數去相關
 
 ## 7. 邊界條件
 
