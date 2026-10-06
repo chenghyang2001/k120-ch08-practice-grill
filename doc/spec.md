@@ -25,6 +25,8 @@
 | 11 | 生命週期 | 狀態機 PLAYING → SOLVED／GAVE_UP（見 §5） |
 | 12 | Undo × 提示 | 提示時從 Undo 堆疊濾除該格紀錄、Redo 全清 |
 | 13 | 流程 | 規格先行 → 四批實作，每批 code-writer → code-qa → code-reviewer |
+| 14 | 題號 | 題號與難度綁定：亂數用 `Random(f"{difficulty.name}:{seed}")`，GUI 顯示「困難 #17」 |
+| 15 | 提示格顯示 | 提示填入的格子以綠色粗體顯示，由 `GameSession.is_hinted()` 判斷 |
 
 環境：`requires-python = ">=3.12"`（開發機為 3.14.7、uv 0.12.23）。
 
@@ -118,7 +120,7 @@ def rate_difficulty(givens: Grid) -> Difficulty: ...   # v1：依提示數
 
 出題流程：
 
-1. `rng = random.Random(seed)`；以隨機順序候選填滿空盤，產生完整解
+1. `rng = random.Random(f"{difficulty.name}:{seed}")`（決策 14：同 seed 不同難度為不同題）；以隨機順序候選填滿空盤，產生完整解
 2. 隨機順序逐格挖洞；每挖一格用 `count_solutions(limit=2)` 驗證，非唯一解則填回
 3. 提示數降到目標區間上限內即停（目標值在區間內隨機取）
 4. 未達區間 → 換新完整盤面重試，最多 20 次；仍失敗則取提示數最少的那次結果
@@ -160,6 +162,10 @@ class GameSession:
     def check(self) -> set[tuple[int, int]]: ...   # 與正解不符的已填格
     def give_up(self) -> None: ...                 # 填入正解，state → GAVE_UP
     def has_progress(self) -> bool: ...            # 是否填過任何格（新遊戲確認用）
+    def is_hinted(self, row: int, col: int) -> bool: ...  # 該格是否由提示填入（決策 15）
+
+# board 屬性回傳型別標為唯讀 Protocol `BoardView`（get / is_given / conflicts / candidates / is_full / to_grid），
+# 防止 GUI 繞過 set_cell 直接修改盤面
 ```
 
 ## 5. 遊戲規則與狀態機
@@ -192,12 +198,14 @@ class GameSession:
 ## 6. GUI 規格（`gui/app.py`）
 
 - **版面**：上方列（難度下拉、新遊戲、題號 #seed、計時）／中央 Canvas 盤面／下方 1–9 數字按鈕＋清除、Undo、Redo、提示、檢查、自動解
-- **選格**：滑鼠點擊、方向鍵移動；選取格高亮，同行/列/宮淡色，同數字淡色高亮
+- **選格**：滑鼠點擊、方向鍵移動（移動須夾在 0–8，不可越界）；選取格高亮，同行/列/宮淡色，同數字淡色高亮
 - **填數**：鍵盤 `1`–`9` 或數字按鈕；`0`/`Delete`/`Backspace` 清除；`Ctrl+Z`/`Ctrl+Y`
-- **顏色**：給定格黑色粗體、玩家填入藍色、衝突數字紅色、「檢查」後錯格紅底（下次修改時清除）
+- **顏色**：給定格黑色粗體、提示格綠色粗體、玩家填入藍色、衝突數字紅色、「檢查」後錯格紅底（下次修改時清除）
 - **格線**：宮界粗線、格界細線
 - 點擊座標→行列換算為純函式 `pixel_to_cell(x, y, cell_size, margin) -> tuple[int, int] | None`，可單元測試
 - 出題時游標 `watch`；完成時跳訊息框顯示用時與提示次數
+- 題號顯示格式：「{難度 label} #{seed}」
+- 每個改動盤面的操作後統一呼叫 `_after_action()`：重繪、更新按鈕啟用狀態（can_undo / can_redo / is_over）、偵測 state 離開 PLAYING 時停表並跳訊息
 
 ## 7. 邊界條件
 
@@ -233,7 +241,7 @@ class GameSession:
 11. 三種難度各數個 seed：唯一解
 12. 提示數落在區間（或為退而求其次結果且 ≤ 區間上限＋容差）
 13. `solution` 與 `solve(givens)` 一致
-14. 效能：困難 × 20 seed，每題 < 1 秒
+14. 效能：困難 × 20 seed，每題 < 1 秒（每題量 3 次取最小值，以排除 CI 噪音）
 15. `rate_difficulty` 邊界值（25/29/30/35/36/40）
 
 **test_game.py**
