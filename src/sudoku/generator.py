@@ -7,6 +7,8 @@
 4. 未進入區間就換新完整盤面重試，最多 MAX_RETRIES 次；仍失敗則取提示數最少的結果
 
 整個流程只用以 seed 建立的 rng，不碰全域 random 狀態，確保相同 seed 產生相同題目。
+重現性範圍：同一 seed 只保證在同一 Python 大版本、同一版 generator 演算法下重現同一題；
+random.Random 的序列演算法或本模組挖洞流程一改，同一題號就可能對應到不同題目。
 本模組不得 import tkinter，也不自行實作回溯（一律透過 solver）。
 """
 
@@ -21,12 +23,13 @@ from sudoku.solver import _random_fill, count_solutions
 
 # 困難題單次挖洞偶爾停在區間上限之上，20 次重試在 1 秒預算內足以命中（spec 決策 9）
 MAX_RETRIES = 20
-# random.Random 的整數 seed 空間；seed=None 時從此範圍隨機取一個當題號
+# 合法題號範圍 0 <= seed < SEED_SPACE；上限讓 GUI 顯示的題號長度有界，
+# seed=None 時也從此範圍挑題號
 SEED_SPACE = 2**32
 
 
 class Difficulty(Enum):
-    """難度等級；value 為顯示用中文名稱，提示數區間由 clue_range 取得。"""
+    """難度等級；顯示名稱由 label 取得，提示數區間由 clue_range 取得。"""
 
     EASY = "簡單"
     MEDIUM = "中等"
@@ -36,6 +39,15 @@ class Difficulty(Enum):
     def clue_range(self) -> tuple[int, int]:
         """此難度的提示數區間 (下限, 上限)，兩端皆含。"""
         return _CLUE_RANGES[self]
+
+    @property
+    def label(self) -> str:
+        """顯示用中文名稱。
+
+        GUI 一律透過 label 取名稱、不直接讀 value：日後若 value 改成英文代碼
+        （例如為了序列化），顯示文字不必跟著改。
+        """
+        return self.value
 
 
 # 放在類別外：Enum 類別內的 dict 屬性會被當成成員，無法當查表常數
@@ -68,15 +80,16 @@ def _validate_difficulty(difficulty: object) -> None:
 
 
 def _validate_seed(seed: object) -> None:
-    """seed 必須是非負整數。
+    """seed 必須是 0 <= seed < SEED_SPACE 的整數。
 
     bool 是 int 子類別，明確排除以免 True 被當成 1；
-    負數會被 random.Random 取絕對值，導致 -5 與 5 出同一題卻顯示不同題號，故拒絕。
+    負數會被 random.Random 取絕對值，導致 -5 與 5 出同一題卻顯示不同題號，故拒絕；
+    超過上限的巨大整數在 GUI 題號欄無法完整顯示，也不在 seed=None 會挑到的範圍內，一併拒絕。
     """
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise TypeError(f"seed 必須是整數或 None，收到 {seed!r}")
-    if seed < 0:
-        raise ValueError(f"seed 必須是非負整數，收到 {seed}")
+    if not 0 <= seed < SEED_SPACE:
+        raise ValueError(f"seed 必須在 0 <= seed < {SEED_SPACE} 範圍內，收到 {seed}")
 
 
 def _dig_holes(solution: Grid, target: int, rng: random.Random) -> tuple[Grid, int]:
@@ -107,15 +120,17 @@ def generate(difficulty: Difficulty, seed: int | None = None) -> Puzzle:
     """產生一道唯一解的題目。
 
     seed 為 None 時隨機取一個並存入 Puzzle.seed，讓 GUI 能顯示題號、日後重現同一題。
+    同一 seed 只保證在同一 Python 大版本、同一版 generator 演算法下重現同一題。
     重試 MAX_RETRIES 次仍未進入難度區間時不拋例外，回傳提示數最少的那次結果。
 
     difficulty 不是 Difficulty、seed 不是 int（或為 bool）→ TypeError；
-    seed 為負數 → ValueError。
+    seed 不在 0 <= seed < SEED_SPACE → ValueError。
     """
     _validate_difficulty(difficulty)
     if seed is None:
-        # 只有「挑題號」這一步用全域 random；之後出題全程只用專屬 rng
-        seed = random.randrange(SEED_SPACE)
+        # 用 SystemRandom 挑題號：不讀也不推進全域 random 狀態，
+        # 呼叫端（例如測試）先 random.seed() 過也不會讓每局題號都相同
+        seed = random.SystemRandom().randrange(SEED_SPACE)
     else:
         _validate_seed(seed)
     rng = random.Random(seed)

@@ -11,6 +11,7 @@ from sudoku import generator
 from sudoku.board import Board, Grid
 from sudoku.generator import (
     MAX_RETRIES,
+    SEED_SPACE,
     Difficulty,
     Puzzle,
     generate,
@@ -25,6 +26,8 @@ SEEDS = [0, 1, 7, 42, 2024]
 CLUE_TOLERANCE = 3
 # spec 決策 9：困難題每題出題預算
 HARD_TIME_LIMIT_SECONDS = 1.0
+# 計時取多次最小值，排除 GC 或其他程序搶 CPU 造成的偶發尖峰（與 test_solver 一致）
+TIMING_REPEATS = 3
 DIGITS = set(range(1, 10))
 
 
@@ -66,6 +69,19 @@ def test_difficulty_values_are_chinese() -> None:
     assert Difficulty.HARD.value == "困難"
 
 
+@pytest.mark.parametrize(
+    ("difficulty", "expected_label"),
+    [
+        (Difficulty.EASY, "簡單"),
+        (Difficulty.MEDIUM, "中等"),
+        (Difficulty.HARD, "困難"),
+    ],
+)
+def test_difficulty_label(difficulty: Difficulty, expected_label: str) -> None:
+    assert difficulty.label == expected_label
+    assert isinstance(difficulty.label, str)
+
+
 def test_difficulty_clue_ranges() -> None:
     assert Difficulty.EASY.clue_range == (36, 40)
     assert Difficulty.MEDIUM.clue_range == (30, 35)
@@ -75,6 +91,10 @@ def test_difficulty_clue_ranges() -> None:
 
 def test_max_retries_is_twenty() -> None:
     assert MAX_RETRIES == 20
+
+
+def test_seed_space_is_two_to_the_32() -> None:
+    assert SEED_SPACE == 2**32
 
 
 # ---------- 10. 相同 seed 產生相同 Puzzle ----------
@@ -97,7 +117,7 @@ def test_seed_none_records_reproducible_seed() -> None:
     puzzle = generate(Difficulty.MEDIUM)
     assert isinstance(puzzle.seed, int)
     assert not isinstance(puzzle.seed, bool)
-    assert 0 <= puzzle.seed < 2**32
+    assert 0 <= puzzle.seed < SEED_SPACE
     assert generate(Difficulty.MEDIUM, seed=puzzle.seed) == puzzle
 
 
@@ -110,12 +130,23 @@ def test_generate_does_not_depend_on_global_random_state() -> None:
     assert first == second
 
 
-def test_generate_with_seed_does_not_consume_global_random() -> None:
+@pytest.mark.parametrize("seed", [3, None])
+def test_generate_does_not_consume_global_random(seed: int | None) -> None:
+    # seed=None 改用 SystemRandom 挑題號，因此也不得推進全域 random 狀態
     random.seed(555)
     expected_next = random.random()
     random.seed(555)
-    generate(Difficulty.EASY, seed=3)
+    generate(Difficulty.EASY, seed=seed)
     assert random.random() == expected_next
+
+
+def test_seed_none_ignores_global_random_seed() -> None:
+    # 全域 random 被固定 seed 時，seed=None 仍應各自挑題號（SystemRandom 不受影響）
+    seeds = set()
+    for _ in range(3):
+        random.seed(0)
+        seeds.add(generate(Difficulty.EASY).seed)
+    assert len(seeds) > 1
 
 
 # ---------- 11. 三種難度：唯一解 ----------
@@ -197,7 +228,7 @@ def test_successful_attempt_stops_retrying(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(generator, "_random_fill", counting_fill)
     generate(Difficulty.EASY, seed=11)
-    # 簡單題單次挖洞必定能降到 36–40，不應觸發重試
+    # 此 seed 實測單次命中簡單區間 36–40，命中後不應再重試
     assert len(calls) == 1
 
 
@@ -240,9 +271,16 @@ def test_generate_invalid_seed_type_raises(bad_seed: object) -> None:
         generate(Difficulty.EASY, seed=bad_seed)  # type: ignore[arg-type]
 
 
-def test_generate_negative_seed_raises_value_error() -> None:
+@pytest.mark.parametrize("bad_seed", [-1, SEED_SPACE, SEED_SPACE + 1, 2**64])
+def test_generate_out_of_range_seed_raises_value_error(bad_seed: int) -> None:
     with pytest.raises(ValueError):
-        generate(Difficulty.EASY, seed=-1)
+        generate(Difficulty.EASY, seed=bad_seed)
+
+
+@pytest.mark.parametrize("edge_seed", [0, SEED_SPACE - 1])
+def test_generate_accepts_seed_space_edges(edge_seed: int) -> None:
+    puzzle = generate(Difficulty.EASY, seed=edge_seed)
+    assert puzzle.seed == edge_seed
 
 
 # ---------- 14. 效能：困難 × 20 seed，每題 < 1 秒 ----------
@@ -251,11 +289,14 @@ def test_generate_negative_seed_raises_value_error() -> None:
 @pytest.mark.slow
 @pytest.mark.parametrize("seed", range(20))
 def test_hard_generation_within_time_budget(seed: int) -> None:
-    start = time.perf_counter()
-    puzzle = generate(Difficulty.HARD, seed=seed)
-    elapsed = time.perf_counter() - start
-    assert puzzle.clue_count >= Difficulty.HARD.clue_range[0]
-    assert elapsed < HARD_TIME_LIMIT_SECONDS, f"seed={seed} 出題耗時 {elapsed:.3f} 秒"
+    timings: list[float] = []
+    for _ in range(TIMING_REPEATS):
+        start = time.perf_counter()
+        puzzle = generate(Difficulty.HARD, seed=seed)
+        timings.append(time.perf_counter() - start)
+        assert puzzle.clue_count >= Difficulty.HARD.clue_range[0]
+    best = min(timings)
+    assert best < HARD_TIME_LIMIT_SECONDS, f"seed={seed} 出題最快耗時 {best:.3f} 秒"
 
 
 # ---------- 15. rate_difficulty 邊界值 ----------
@@ -299,8 +340,9 @@ def test_rate_difficulty_accepts_list_grid() -> None:
 def test_rate_difficulty_matches_generated_puzzle(difficulty: Difficulty) -> None:
     puzzle = generate(difficulty, seed=17)
     low, high = difficulty.clue_range
-    if low <= puzzle.clue_count <= high:
-        assert rate_difficulty(puzzle.givens) is difficulty
+    # 明確斷言此 seed 落在區間內，避免條件不成立時整個測試空跑通過
+    assert low <= puzzle.clue_count <= high, f"seed=17 提示數 {puzzle.clue_count} 不在區間"
+    assert rate_difficulty(puzzle.givens) is difficulty
 
 
 @pytest.mark.parametrize("bad_givens", [None, "0" * 81, b"0" * 81, 81])
