@@ -3,13 +3,17 @@
 內部以 81 格扁平 list 與行/列/宮 bitmask 表示，避免每步重建 set，
 讓「世界最難數獨」這類題目也能在 1 秒內解完。
 本模組不得 import tkinter，也不修改傳入的 Board。
+
+另提供模組內部函式 `_random_fill(rng)` 給 generator 產生隨機完整解，
+與 solve / count_solutions 共用同一套回溯，避免 generator 另寫一套搜尋。
 """
 
 from __future__ import annotations
 
+import random
 from collections.abc import Iterator
 
-from sudoku.board import BOX_SIZE, EMPTY, SIZE, Board
+from sudoku.board import BOX_SIZE, EMPTY, SIZE, Board, Grid
 
 _CELL_COUNT = SIZE * SIZE
 # bit d（1 << d，d=1..9）代表數字 d；bit 0 不使用，讓數字可直接當位移量
@@ -92,22 +96,39 @@ def _pick_mrv_cell(state: _SearchState, empties: list[int]) -> tuple[int, int]:
     return best_index, best_mask
 
 
-def _search(state: _SearchState, empties: list[int]) -> Iterator[list[int]]:
+def _mask_digits(mask: int) -> list[int]:
+    """把候選 bitmask 轉成由小到大的數字清單。"""
+    digits: list[int] = []
+    while mask:
+        lowest_bit = mask & -mask
+        mask ^= lowest_bit
+        digits.append(lowest_bit.bit_length() - 1)
+    return digits
+
+
+def _search(
+    state: _SearchState,
+    empties: list[int],
+    rng: random.Random | None = None,
+) -> Iterator[list[int]]:
     """深度優先回溯，依序產生每個完整解（81 格扁平 list 的副本）。
 
     用 generator 讓 solve 取第一個解、count_solutions 數到 limit 就停，共用同一套搜尋。
     遞迴深度最多為空格數（≤ 81），不會觸及 Python 遞迴上限。
+
+    rng 為 None 時候選由小到大嘗試，維持 solve / count_solutions 的決定性；
+    有 rng 時打亂候選順序，讓 _random_fill 能由同一套搜尋產生隨機盤面。
     """
     index, mask = _pick_mrv_cell(state, empties)
     if index == -1:
         yield list(state.cells)
         return
-    while mask:
-        lowest_bit = mask & -mask
-        mask ^= lowest_bit
-        digit = lowest_bit.bit_length() - 1
+    digits = _mask_digits(mask)
+    if rng is not None:
+        rng.shuffle(digits)
+    for digit in digits:
         state.place(index, digit)
-        yield from _search(state, empties)
+        yield from _search(state, empties, rng)
         state.remove(index, digit)
 
 
@@ -151,3 +172,19 @@ def count_solutions(board: Board, limit: int = 2) -> int:
         if found >= limit:
             break
     return found
+
+
+def _random_fill(rng: random.Random) -> Grid:
+    """從空盤以隨機候選順序回溯，產生一個隨機的合法完整解（generator 專用）。
+
+    只使用傳入的 rng，不碰全域 random 狀態，確保相同 seed 產生相同盤面。
+    空盤必定有解，因此取不到解代表搜尋本身壞掉，以 RuntimeError 明確揭露。
+    """
+    if not isinstance(rng, random.Random):
+        raise TypeError(f"rng 必須是 random.Random，收到 {type(rng).__name__}")
+    state = _SearchState([EMPTY] * _CELL_COUNT)
+    empties = list(range(_CELL_COUNT))
+    flat_solution = next(_search(state, empties, rng), None)
+    if flat_solution is None:
+        raise RuntimeError("空盤找不到完整解，解題器狀態異常")
+    return tuple(tuple(flat_solution[r * SIZE : (r + 1) * SIZE]) for r in range(SIZE))

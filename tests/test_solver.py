@@ -17,6 +17,8 @@ EMPTY_STRING = "0" * 81
 
 # 解題時間上限（spec：世界最難數獨應在 1 秒內解完）
 HARDEST_TIME_LIMIT_SECONDS = 1.0
+# 取多次最小值，排除 CI 或背景程序造成的單次抖動
+TIMING_REPEATS = 3
 
 
 def assert_valid_solution(solved: Board, original: Board) -> None:
@@ -78,12 +80,22 @@ def test_solve_partially_filled_by_player() -> None:
 
 def test_solve_worlds_hardest_sudoku() -> None:
     board = Board.from_string(HARDEST)
-    start = time.perf_counter()
     solved = solve(board)
-    elapsed = time.perf_counter() - start
     assert solved is not None
     assert_valid_solution(solved, board)
-    assert elapsed < HARDEST_TIME_LIMIT_SECONDS, f"解題耗時 {elapsed:.3f} 秒"
+
+
+@pytest.mark.slow
+def test_solve_worlds_hardest_within_time_budget() -> None:
+    board = Board.from_string(HARDEST)
+    timings: list[float] = []
+    for _ in range(TIMING_REPEATS):
+        start = time.perf_counter()
+        solved = solve(board)
+        timings.append(time.perf_counter() - start)
+        assert solved is not None
+    best = min(timings)
+    assert best < HARDEST_TIME_LIMIT_SECONDS, f"解題最快耗時 {best:.3f} 秒"
 
 
 def test_worlds_hardest_has_unique_solution() -> None:

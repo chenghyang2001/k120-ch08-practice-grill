@@ -69,6 +69,25 @@ def test_set_does_not_change_given_flag_and_lock_works() -> None:
     assert board.get(3, 4) == 2
 
 
+def test_set_zero_after_lock_keeps_given_flag() -> None:
+    # 現行語意：set 不碰給定旗標，即使清成 0 也仍是給定格（spec §4.3 實作約束）
+    board = Board.from_string(EMPTY_STRING)
+    board.set(1, 1, 6)
+    board.lock(1, 1)
+    board.set(1, 1, 0)
+    assert board.get(1, 1) == 0
+    assert board.is_given(1, 1)
+
+
+def test_set_zero_on_from_grid_solution_keeps_given_flag() -> None:
+    # 挖洞用的 Board 空格仍帶給定旗標，所以 Puzzle.givens 必須經 to_grid() 再重建
+    board = Board.from_grid(Board.from_string(SOLUTION).to_grid())
+    board.set(4, 4, 0)
+    assert board.get(4, 4) == 0
+    assert board.is_given(4, 4)
+    assert Board.from_grid(board.to_grid()).is_given(4, 4) is False
+
+
 def test_copy_is_independent() -> None:
     board = Board.from_string(PUZZLE)
     clone = board.copy()
@@ -78,6 +97,24 @@ def test_copy_is_independent() -> None:
     assert board.get(0, 2) == 0
     assert not board.is_given(0, 2)
     assert clone != board
+
+
+def test_copy_preserves_subclass() -> None:
+    class TaggedBoard(Board):
+        __slots__ = ()
+
+    board = TaggedBoard.from_string(PUZZLE)
+    clone = board.copy()
+    assert type(clone) is TaggedBoard
+    assert clone == board
+
+
+def test_repr_shows_cells_and_given_count() -> None:
+    board = Board.from_string(PUZZLE)
+    given_count = sum(1 for ch in PUZZLE if ch != "0")
+    assert repr(board) == f"<Board {PUZZLE!r} givens={given_count}>"
+    # 格式不得宣稱可用 from_string 重建（給定旗標無法由字串還原）
+    assert "from_string" not in repr(board)
 
 
 def test_is_full() -> None:
@@ -217,6 +254,29 @@ def test_from_grid_wrong_type_raises_type_error() -> None:
     grid[0][0] = "5"  # type: ignore[call-overload]
     with pytest.raises(TypeError):
         Board.from_grid(grid)
+
+
+@pytest.mark.parametrize(
+    "bad_grid",
+    [
+        b"0" * 81,
+        bytearray(81),
+        {tuple([0] * 9)},
+        {i: [0] * 9 for i in range(9)},
+        range(9),
+    ],
+)
+def test_from_grid_non_list_tuple_raises_type_error(bad_grid: object) -> None:
+    with pytest.raises(TypeError):
+        Board.from_grid(bad_grid)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("bad_row", [b"\x00" * 9, {0, 1, 2, 3, 4, 5, 6, 7, 8}])
+def test_from_grid_non_list_tuple_row_raises_type_error(bad_row: object) -> None:
+    grid: list[object] = [[0] * 9 for _ in range(9)]
+    grid[3] = bad_row
+    with pytest.raises(TypeError):
+        Board.from_grid(grid)  # type: ignore[arg-type]
 
 
 def test_from_string_non_string_raises_type_error() -> None:

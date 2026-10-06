@@ -37,11 +37,12 @@ def _validate_value(value: int) -> None:
 
 
 def _require_sequence(obj: object, label: str) -> None:
-    """非序列或為字串時拋 TypeError。
+    """不是 list 或 tuple 時拋 TypeError。
 
-    字串也有 len()，但應改用 from_string，明確拒絕以免逐字元誤解析。
+    只接受 list/tuple 白名單：str、bytes 有 len() 卻會被逐字元誤解析，
+    set、dict 有 len() 卻沒有固定順序，鴨子型別判斷會讓這些輸入悄悄通過。
     """
-    if isinstance(obj, str) or not hasattr(obj, "__len__"):
+    if not isinstance(obj, (list, tuple)):
         raise TypeError(f"{label}必須是序列（list/tuple），收到 {type(obj).__name__}")
 
 
@@ -214,9 +215,12 @@ class Board:
         """輸出 81 字元字串（空格以 '0' 表示），與 from_string 互為反函式。"""
         return "".join(str(value) for row_values in self._cells for value in row_values)
 
-    def copy(self) -> Board:
-        """深拷貝盤面與給定格旗標，修改副本不影響原盤。"""
-        clone = Board()
+    def copy(self) -> Self:
+        """深拷貝盤面與給定格旗標，修改副本不影響原盤。
+
+        用 type(self)() 建立副本，子類別呼叫 copy() 時仍得到子類別實例。
+        """
+        clone = type(self)()
         clone._cells = [list(row_values) for row_values in self._cells]
         clone._given = [list(row_flags) for row_flags in self._given]
         return clone
@@ -232,7 +236,10 @@ class Board:
     __hash__ = None  # type: ignore[assignment]
 
     def __repr__(self) -> str:
-        return f"Board.from_string({self.to_string()!r})"
+        # 不寫成 Board.from_string(...)：那樣無法重建給定格旗標（玩家填入或 lock 的格子），
+        # 會誤導讀者以為 eval(repr) 能得到相等盤面
+        given_count = sum(flag for row_flags in self._given for flag in row_flags)
+        return f"<{type(self).__name__} {self.to_string()!r} givens={given_count}>"
 
     def __str__(self) -> str:
         lines: list[str] = []

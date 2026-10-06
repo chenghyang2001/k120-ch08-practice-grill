@@ -9,7 +9,7 @@ dependencies = []
 sudoku = "sudoku.__main__:main"
 
 [dependency-groups]
-dev = ["pytest"]
+dev = ["pytest", "ruff"]
 
 [build-system]
 requires = ["hatchling"]
@@ -23,3 +23,20 @@ testpaths = ["tests"]
 # 讓 pytest 在未安裝套件時也能從 src layout 匯入 sudoku
 pythonpath = ["src"]
 addopts = "-ra"
+# 效能測試另行標記，需要時可用 -m "not slow" 略過
+markers = ["slow: 效能測試"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "TRY"]
+ignore = [
+    # 例外訊息帶中文上下文是本專案慣例（code-quality 原則 7e），不拆成自訂例外類別
+    "TRY003",
+    # 註解與 docstring 使用全形標點（，：（））是繁中寫作慣例，非誤植
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]

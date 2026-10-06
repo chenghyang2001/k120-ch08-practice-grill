@@ -1,0 +1,2 @@
+# 統一 LF 換行，避免 Windows core.autocrlf 把檔案轉成 CRLF 造成 SHA256 與 diff 不一致
+* text=auto eol=lf
