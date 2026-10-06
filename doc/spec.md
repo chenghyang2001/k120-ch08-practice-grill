@@ -84,6 +84,7 @@ class Board:
 ```
 
 - 數值不在 0–9、座標越界 → `ValueError`
+- 型別錯誤（非 int、bool）→ `TypeError`
 
 ### 4.2 `solver.py`
 
