@@ -9,11 +9,33 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 from enum import Enum, auto
+from typing import Protocol
 
-from sudoku.board import EMPTY, SIZE, Board, Grid, _validate_value
+from sudoku.board import EMPTY, SIZE, Board, Grid, validate_value
 from sudoku.generator import Puzzle
 
 Cell = tuple[int, int]
+
+
+class BoardView(Protocol):
+    """GameSession.board 對外公開的唯讀盤面介面（spec §4.4）。
+
+    只列讀取方法：GUI 拿到的型別沒有 set / lock，型別檢查器就能擋下
+    「繞過 set_cell 直接改盤面」的寫法（那會跳過給定格鎖定與 Undo 紀錄）。
+    這是靜態防線，執行期拿到的仍是內部 Board 物件，不另做複本以免每次重繪都複製盤面。
+    """
+
+    def get(self, row: int, col: int) -> int: ...
+
+    def is_given(self, row: int, col: int) -> bool: ...
+
+    def conflicts(self) -> set[Cell]: ...
+
+    def candidates(self, row: int, col: int) -> set[int]: ...
+
+    def is_full(self) -> bool: ...
+
+    def to_grid(self) -> Grid: ...
 
 
 class GameState(Enum):
@@ -56,8 +78,8 @@ def _validate_puzzle(puzzle: object) -> None:
 class GameSession:
     """一局數獨。set_cell / clear_cell / undo / redo / hint / give_up 是僅有的修改入口。
 
-    board 屬性回傳的是遊戲內部盤面本身（供 GUI 讀取繪製），呼叫端不得直接修改它，
-    否則會繞過給定格鎖定與 Undo 紀錄。
+    board 屬性以唯讀協定 BoardView 對外（供 GUI 讀取繪製），
+    避免呼叫端繞過給定格鎖定與 Undo 紀錄直接改盤面。
     """
 
     def __init__(self, puzzle: Puzzle, rng: random.Random | None = None) -> None:
@@ -65,8 +87,8 @@ class GameSession:
 
         盤面一律用 Board.from_grid(puzzle.givens) 重建：挖洞過程中的 Board 會殘留
         給定旗標（spec §4.3 實作約束），不能直接沿用。
-        rng 只用於提示隨機挑格；預設以 puzzle.seed 建立，讓同一題的提示順序可重現，
-        測試也可注入固定 rng。
+        rng 只用於提示隨機挑格；預設以 f"hint:{puzzle.seed}" 建立，讓同一題的提示順序可重現，
+        又與出題用的 f"{難度}:{seed}" 亂數序列錯開，避免兩者相關；測試也可注入固定 rng。
 
         puzzle 不是 Puzzle、rng 不是 random.Random → TypeError；題目自相矛盾 → ValueError。
         """
@@ -76,9 +98,11 @@ class GameSession:
         self._puzzle = puzzle
         self._solution: Grid = Board.from_grid(puzzle.solution).to_grid()
         self._board = Board.from_grid(puzzle.givens)
-        self._rng = rng if rng is not None else random.Random(puzzle.seed)
+        self._rng = rng if rng is not None else random.Random(f"hint:{puzzle.seed}")
         self._state = GameState.PLAYING
         self._hint_count = 0
+        # 提示填入的格子（決策 15：GUI 以綠色粗體顯示）；give_up 填的格子不算提示
+        self._hinted: set[Cell] = set()
         self._undo_stack: list[Move] = []
         self._redo_stack: list[Move] = []
         # 題目若一開始就填滿（理論上不會出現），直接視為已解，避免卡在無事可做的 PLAYING
@@ -92,8 +116,8 @@ class GameSession:
         return self._puzzle
 
     @property
-    def board(self) -> Board:
-        """目前盤面（內部物件本身，僅供讀取）。"""
+    def board(self) -> BoardView:
+        """目前盤面的唯讀視圖。"""
         return self._board
 
     @property
@@ -127,7 +151,7 @@ class GameSession:
         參數驗證先於狀態判斷，讓錯誤呼叫在任何狀態下都會被發現。
         """
         old = self._board.get(row, col)
-        _validate_value(value)
+        validate_value(value)
         if self.is_over or self._board.is_given(row, col) or old == value:
             return False
         self._board.set(row, col, value)
@@ -196,10 +220,20 @@ class GameSession:
         self._board.set(hint_row, hint_col, self._solution[hint_row][hint_col])
         self._board.lock(hint_row, hint_col)
         self._hint_count += 1
+        self._hinted.add(target)
         self._undo_stack = [m for m in self._undo_stack if (m.row, m.col) != target]
         self._redo_stack.clear()
         self._update_solved()
         return target
+
+    def is_hinted(self, row: int, col: int) -> bool:
+        """該格是否由提示填入（決策 15）；原始給定格、玩家填的格、自動解填的格皆為 False。
+
+        Board 的給定旗標無法區分「題目原有」與「提示鎖定」，因此另以集合記錄。
+        座標越界 → ValueError；型別錯誤 → TypeError。
+        """
+        self._board.get(row, col)  # 借 Board 驗證座標型別與範圍
+        return (row, col) in self._hinted
 
     def _pick_hint_cell(self, row: int | None, col: int | None) -> Cell | None:
         """決定提示哪一格；先驗證參數，再依 spec §5 規則挑格。"""

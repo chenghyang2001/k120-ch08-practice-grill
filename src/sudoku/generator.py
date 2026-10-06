@@ -1,7 +1,7 @@
 """數獨出題器：產生保證唯一解的題目，並依提示數評定難度。
 
 出題流程（spec §4.3）：
-1. 以 seed 建立專屬 rng，用 solver._random_fill 產生隨機完整解
+1. 以「難度名稱:seed」建立專屬 rng（決策 14：題號與難度綁定），用 solver._random_fill 產生隨機完整解
 2. 隨機順序逐格挖洞，每挖一格用 count_solutions(limit=2) 驗證唯一解，否則填回
 3. 提示數降到目標值（在難度區間內隨機取）即停
 4. 未進入區間就換新完整盤面重試，最多 MAX_RETRIES 次；仍失敗則取提示數最少的結果
@@ -92,6 +92,17 @@ def _validate_seed(seed: object) -> None:
         raise ValueError(f"seed 必須在 0 <= seed < {SEED_SPACE} 範圍內，收到 {seed}")
 
 
+def _make_rng(difficulty: Difficulty, seed: int) -> random.Random:
+    """以「難度名稱:seed」字串建立出題 rng（spec 決策 14）。
+
+    若只用 seed，「簡單 #17」與「困難 #17」會共用同一個完整解，只差挖洞多寡，
+    玩家換難度後會覺得是同一題；把難度併入種子讓題號只在同難度內有意義。
+    用 name（EASY）而非 label（簡單）：顯示文字日後可改，不應改變既有題號對應的題目。
+    random.Random 對 str 種子以 SHA-512 雜湊，不受 PYTHONHASHSEED 影響，跨程序可重現。
+    """
+    return random.Random(f"{difficulty.name}:{seed}")
+
+
 def _dig_holes(solution: Grid, target: int, rng: random.Random) -> tuple[Grid, int]:
     """從完整解隨機挖洞，保持唯一解，提示數降到 target 即停。
 
@@ -120,6 +131,7 @@ def generate(difficulty: Difficulty, seed: int | None = None) -> Puzzle:
     """產生一道唯一解的題目。
 
     seed 為 None 時隨機取一個並存入 Puzzle.seed，讓 GUI 能顯示題號、日後重現同一題。
+    題號與難度綁定：同一 seed 在不同難度下是不同的題目（spec 決策 14）。
     同一 seed 只保證在同一 Python 大版本、同一版 generator 演算法下重現同一題。
     重試 MAX_RETRIES 次仍未進入難度區間時不拋例外，回傳提示數最少的那次結果。
 
@@ -133,7 +145,7 @@ def generate(difficulty: Difficulty, seed: int | None = None) -> Puzzle:
         seed = random.SystemRandom().randrange(SEED_SPACE)
     else:
         _validate_seed(seed)
-    rng = random.Random(seed)
+    rng = _make_rng(difficulty, seed)
     low, high = difficulty.clue_range
 
     best: tuple[Grid, Grid, int] | None = None

@@ -264,6 +264,19 @@ def test_operations_after_solved_are_ignored() -> None:
     assert game.hint_count == 0
 
 
+@pytest.mark.parametrize("finish", ["solve", "give_up"])
+def test_invalid_value_still_raises_after_game_over(finish: str) -> None:
+    # 參數驗證先於狀態判斷：結束後的錯誤呼叫也要被發現，不可被「回傳 False」吞掉
+    game = GameSession(puzzle_with_holes(EMPTY_A))
+    if finish == "solve":
+        game.set_cell(*EMPTY_A, solution_at(EMPTY_A))
+    else:
+        game.give_up()
+    assert game.is_over
+    with pytest.raises(ValueError):
+        game.set_cell(0, 0, 10)
+
+
 def test_undo_reaching_correct_full_board_solves() -> None:
     # 填對 A → 清除 A → 對 B 提示；此時 Undo（還原清除）讓盤面填滿全對
     game = GameSession(puzzle_with_holes(EMPTY_A, EMPTY_B))
@@ -272,6 +285,32 @@ def test_undo_reaching_correct_full_board_solves() -> None:
     assert game.hint(*EMPTY_B) == EMPTY_B
     assert game.state is GameState.PLAYING
     assert game.undo() == Move(*EMPTY_A, solution_at(EMPTY_A), 0)
+    assert game.state is GameState.SOLVED
+
+
+def test_redo_reaching_correct_full_board_solves() -> None:
+    # 用公開 API 走不到「redo 後填滿全對」：Redo 只會重放 Undo 途中經過的盤面，
+    # 而那些盤面在當初到達時（set_cell / hint / undo 之後）都已檢查過是否 SOLVED；
+    # 唯一能在 Undo 之後改變其他格的 hint 又會清空 Redo。
+    # 因此以白箱方式直接放入一筆 Redo 紀錄，驗證 redo() 本身會做 SOLVED 判定。
+    game = GameSession(puzzle_with_holes(EMPTY_A))
+    game._redo_stack.append(Move(*EMPTY_A, 0, solution_at(EMPTY_A)))
+    assert game.can_redo()
+    assert game.redo() == Move(*EMPTY_A, 0, solution_at(EMPTY_A))
+    assert game.state is GameState.SOLVED
+    assert not game.can_undo()
+
+
+def test_redo_back_to_post_hint_board_stays_consistent() -> None:
+    # 最接近的公開 API 情境：提示後 Undo 再 Redo 回到提示當下的盤面，狀態維持 PLAYING
+    game = GameSession(puzzle_with_holes(EMPTY_A, EMPTY_B, EMPTY_C))
+    game.set_cell(*EMPTY_A, solution_at(EMPTY_A))
+    assert game.hint(*EMPTY_B) == EMPTY_B
+    assert game.undo() == Move(*EMPTY_A, 0, solution_at(EMPTY_A))
+    assert game.redo() == Move(*EMPTY_A, 0, solution_at(EMPTY_A))
+    assert game.state is GameState.PLAYING
+    # 最後一格填對才轉 SOLVED
+    assert game.set_cell(*EMPTY_C, solution_at(EMPTY_C)) is True
     assert game.state is GameState.SOLVED
 
 
@@ -417,6 +456,48 @@ def test_hint_coord_out_of_range_raises(session: GameSession) -> None:
         session.hint(9, 9)
 
 
+# ---------- 決策 15：is_hinted ----------
+
+
+def test_is_hinted_true_after_hint(session: GameSession) -> None:
+    assert session.is_hinted(*EMPTY_A) is False
+    session.hint(*EMPTY_A)
+    assert session.is_hinted(*EMPTY_A) is True
+
+
+def test_is_hinted_false_for_original_given(session: GameSession) -> None:
+    session.hint(*EMPTY_A)
+    # 原始給定格與提示格都被鎖定，但只有提示格算提示
+    assert session.board.is_given(*GIVEN_CELL)
+    assert session.is_hinted(*GIVEN_CELL) is False
+
+
+def test_is_hinted_false_for_player_filled_cell(session: GameSession) -> None:
+    session.set_cell(*EMPTY_B, solution_at(EMPTY_B))
+    assert session.is_hinted(*EMPTY_B) is False
+
+
+def test_is_hinted_tracks_random_hint_target(session: GameSession) -> None:
+    target = session.hint()
+    assert target is not None
+    assert session.is_hinted(*target) is True
+
+
+def test_give_up_cells_are_not_hinted(session: GameSession) -> None:
+    session.hint(*EMPTY_A)
+    session.give_up()
+    assert session.is_hinted(*EMPTY_A) is True
+    hinted = [(r, c) for r in range(9) for c in range(9) if session.is_hinted(r, c)]
+    assert hinted == [EMPTY_A]
+
+
+def test_is_hinted_validates_coord(session: GameSession) -> None:
+    with pytest.raises(ValueError):
+        session.is_hinted(9, 0)
+    with pytest.raises(TypeError):
+        session.is_hinted(True, 0)  # type: ignore[arg-type]
+
+
 # ---------- 22. check 與 has_progress ----------
 
 
@@ -469,3 +550,30 @@ def test_generated_puzzle_play_through_to_solved() -> None:
     assert game.state is GameState.SOLVED
     assert game.board.to_grid() == puzzle.solution
     assert game.check() == set()
+
+
+def test_generated_puzzle_hint_with_default_rng() -> None:
+    # 整合：generate() 出題＋預設提示 rng（f"hint:{seed}"），提示格必為原本空格且填入正解
+    puzzle = generate(Difficulty.MEDIUM, seed=3)
+    game = GameSession(puzzle)
+    target = game.hint()
+    assert target is not None
+    row, col = target
+    assert puzzle.givens[row][col] == 0
+    assert game.board.get(row, col) == puzzle.solution[row][col]
+    assert game.board.is_given(row, col)
+    assert game.is_hinted(row, col)
+    assert game.hint_count == 1
+    assert game.state is GameState.PLAYING
+
+
+def test_default_hint_rng_is_seeded_with_hint_prefix() -> None:
+    # 預設提示 rng 與注入 Random(f"hint:{seed}") 的提示序列必須相同，
+    # 且與出題種子格式（難度名稱:seed）錯開
+    puzzle = generate(Difficulty.MEDIUM, seed=3)
+    default_game = GameSession(puzzle)
+    explicit_game = GameSession(puzzle, rng=random.Random(f"hint:{puzzle.seed}"))
+    default_cells = [default_game.hint() for _ in range(5)]
+    explicit_cells = [explicit_game.hint() for _ in range(5)]
+    assert default_cells == explicit_cells
+    assert all(cell is not None for cell in default_cells)

@@ -17,8 +17,11 @@ DIGITS: frozenset[int] = frozenset(range(1, SIZE + 1))
 _EMPTY_CHARS = frozenset("0.")
 
 
-def _validate_coord(row: int, col: int) -> None:
-    """座標型別錯誤（非 int、bool）拋 TypeError；越界拋 ValueError。"""
+def validate_coord(row: int, col: int) -> None:
+    """座標型別錯誤（非 int、bool）拋 TypeError；越界拋 ValueError。
+
+    公開給 game / gui.layout 共用，讓座標規則只有一份定義。
+    """
     for name, index in (("row", row), ("col", col)):
         # bool 是 int 子類別，明確排除以免 True 被當成 1 悄悄通過
         if isinstance(index, bool) or not isinstance(index, int):
@@ -27,8 +30,11 @@ def _validate_coord(row: int, col: int) -> None:
             raise ValueError(f"{name} 超出範圍 0–8：{index}")
 
 
-def _validate_value(value: int) -> None:
-    """數值型別錯誤（非 int、bool）拋 TypeError；不在 0–9 拋 ValueError。"""
+def validate_value(value: int) -> None:
+    """數值型別錯誤（非 int、bool）拋 TypeError；不在 0–9 拋 ValueError。
+
+    公開給 game 在檢查狀態前先驗證參數，避免各模組各寫一套數值檢查。
+    """
     # bool 是 int 子類別，明確排除以免 True 被當成 1 悄悄通過
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"數值必須是整數，收到 {value!r}")
@@ -121,7 +127,7 @@ class Board:
             if len(row_values) != SIZE:
                 raise ValueError(f"第 {r} 列必須有 {SIZE} 格，收到 {len(row_values)}")
             for c, value in enumerate(row_values):
-                _validate_value(value)
+                validate_value(value)
                 board._cells[r][c] = value
                 board._given[r][c] = value != EMPTY
         return board
@@ -151,23 +157,23 @@ class Board:
 
     def get(self, row: int, col: int) -> int:
         """取得格子數值（0 表示空格）。"""
-        _validate_coord(row, col)
+        validate_coord(row, col)
         return self._cells[row][col]
 
     def set(self, row: int, col: int, value: int) -> None:
         """設定格子數值；不檢查給定格鎖定（由 game 負責）。"""
-        _validate_coord(row, col)
-        _validate_value(value)
+        validate_coord(row, col)
+        validate_value(value)
         self._cells[row][col] = value
 
     def is_given(self, row: int, col: int) -> bool:
         """該格是否為給定格（題目原有或提示鎖定）。"""
-        _validate_coord(row, col)
+        validate_coord(row, col)
         return self._given[row][col]
 
     def lock(self, row: int, col: int) -> None:
         """將格子設為給定格；提示填入正解後呼叫，讓玩家無法再改。"""
-        _validate_coord(row, col)
+        validate_coord(row, col)
         self._given[row][col] = True
 
     # ---------- 規則查詢 ----------
@@ -179,7 +185,7 @@ class Board:
         因此結果可能包含（也可能不含）該格目前的值；GUI 或提示可藉此判斷
         已填值是否仍屬合法候選。
         """
-        _validate_coord(row, col)
+        validate_coord(row, col)
         used = {self._cells[r][c] for r, c in PEERS[(row, col)]}
         return set(DIGITS - used)
 

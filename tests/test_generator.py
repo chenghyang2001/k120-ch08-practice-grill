@@ -60,6 +60,15 @@ def grid_with_clues(clue_count: int) -> Grid:
     return tuple(tuple(flat[r * 9 : (r + 1) * 9]) for r in range(9))
 
 
+def expected_difficulty_for(clue_count: int) -> Difficulty:
+    """依 spec 決策 4 的區間由提示數推難度（獨立於 rate_difficulty 的實作，供交叉比對）。"""
+    if clue_count >= 36:
+        return Difficulty.EASY
+    if clue_count >= 30:
+        return Difficulty.MEDIUM
+    return Difficulty.HARD
+
+
 # ---------- Difficulty ----------
 
 
@@ -111,6 +120,34 @@ def test_same_seed_same_puzzle(difficulty: Difficulty) -> None:
 def test_different_seeds_give_different_puzzles() -> None:
     puzzles = {generate(Difficulty.EASY, seed=seed).givens for seed in SEEDS}
     assert len(puzzles) == len(SEEDS)
+
+
+@pytest.mark.parametrize("seed", [0, 17, 2024])
+def test_same_seed_different_difficulty_gives_different_solution(seed: int) -> None:
+    # spec 決策 14：題號與難度綁定，「簡單 #17」與「困難 #17」不可共用同一完整解
+    solutions = {difficulty: generate(difficulty, seed=seed).solution for difficulty in Difficulty}
+    assert len(set(solutions.values())) == len(Difficulty)
+
+
+@pytest.mark.parametrize("difficulty", ALL_DIFFICULTIES)
+def test_make_rng_uses_difficulty_name_and_seed(difficulty: Difficulty) -> None:
+    # 種子格式固定為「難度名稱:seed」（用 name 不用 label，改顯示文字不影響題號對應）
+    rng = generator._make_rng(difficulty, 17)
+    expected = random.Random(f"{difficulty.name}:17")
+    assert [rng.random() for _ in range(3)] == [expected.random() for _ in range(3)]
+
+
+def test_generate_builds_rng_via_make_rng(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[Difficulty, int]] = []
+    original_make_rng = generator._make_rng
+
+    def spying_make_rng(difficulty: Difficulty, seed: int) -> random.Random:
+        calls.append((difficulty, seed))
+        return original_make_rng(difficulty, seed)
+
+    monkeypatch.setattr(generator, "_make_rng", spying_make_rng)
+    generate(Difficulty.HARD, seed=17)
+    assert calls == [(Difficulty.HARD, 17)]
 
 
 def test_seed_none_records_reproducible_seed() -> None:
@@ -219,17 +256,28 @@ def test_puzzle_is_frozen_and_uses_immutable_grids() -> None:
 # ---------- 重試與退而求其次 ----------
 
 
-def test_successful_attempt_stops_retrying(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[int] = []
+@pytest.mark.parametrize("seed", range(5))
+def test_retry_stops_at_first_attempt_within_range(
+    seed: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 不寫死「某 seed 第一次就命中」：決策 14 改了 rng 種子後舊 seed 的結果全變。
+    # 改為記錄每次嘗試的提示數，斷言「第一次落在區間內就停」這條規則本身
+    attempt_clues: list[int] = []
+    original_dig = generator._dig_holes
 
-    def counting_fill(rng: random.Random) -> Grid:
-        calls.append(1)
-        return _random_fill(rng)
+    def recording_dig(solution: Grid, target: int, rng: random.Random) -> tuple[Grid, int]:
+        givens, clue_count = original_dig(solution, target, rng)
+        attempt_clues.append(clue_count)
+        return givens, clue_count
 
-    monkeypatch.setattr(generator, "_random_fill", counting_fill)
-    generate(Difficulty.EASY, seed=11)
-    # 此 seed 實測單次命中簡單區間 36–40，命中後不應再重試
-    assert len(calls) == 1
+    monkeypatch.setattr(generator, "_dig_holes", recording_dig)
+    puzzle = generate(Difficulty.EASY, seed=seed)
+    high = Difficulty.EASY.clue_range[1]
+    assert all(clues > high for clues in attempt_clues[:-1])
+    if attempt_clues[-1] <= high:
+        assert puzzle.clue_count == attempt_clues[-1]
+    else:
+        assert len(attempt_clues) == MAX_RETRIES
 
 
 def test_fallback_uses_fewest_clues_without_raising(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -338,11 +386,17 @@ def test_rate_difficulty_accepts_list_grid() -> None:
 
 @pytest.mark.parametrize("difficulty", ALL_DIFFICULTIES)
 def test_rate_difficulty_matches_generated_puzzle(difficulty: Difficulty) -> None:
-    puzzle = generate(difficulty, seed=17)
+    # 掃描多個 seed 而非押單一 seed：任何一題都必須與「依 clue_count 推得的難度」一致，
+    # 並要求至少一題真的落在所選難度區間，避免全部退而求其次時測試空跑通過
     low, high = difficulty.clue_range
-    # 明確斷言此 seed 落在區間內，避免條件不成立時整個測試空跑通過
-    assert low <= puzzle.clue_count <= high, f"seed=17 提示數 {puzzle.clue_count} 不在區間"
-    assert rate_difficulty(puzzle.givens) is difficulty
+    in_range_count = 0
+    for seed in range(20):
+        puzzle = generate(difficulty, seed=seed)
+        assert rate_difficulty(puzzle.givens) is expected_difficulty_for(puzzle.clue_count)
+        if low <= puzzle.clue_count <= high:
+            in_range_count += 1
+            assert rate_difficulty(puzzle.givens) is difficulty
+    assert in_range_count >= 1, f"{difficulty.label} 掃描 20 個 seed 皆未落在區間"
 
 
 @pytest.mark.parametrize("bad_givens", [None, "0" * 81, b"0" * 81, 81])
