@@ -123,6 +123,11 @@ def rate_difficulty(givens: Grid) -> Difficulty: ...   # v1：依提示數
 3. 提示數降到目標區間上限內即停（目標值在區間內隨機取）
 4. 未達區間 → 換新完整盤面重試，最多 20 次；仍失敗則取提示數最少的那次結果
 
+實作約束（第 1 批 code review 後補充）：
+
+- **隨機填盤**：`solver.py` 內部搜尋接受可選的 `rng`（打亂候選嘗試順序），並提供模組內部函式 `_random_fill(rng: random.Random) -> Grid` 給 generator 用；公開的 `solve` / `count_solutions` 簽名與決定性行為不變。generator 不得自己另寫一套回溯
+- **給定格旗標**：`Board.set(r, c, 0)` 不會清除給定旗標。因此 `Puzzle.givens` 一律以 `to_grid()` 輸出的 `Grid` 存放，game 端以 `Board.from_grid(puzzle.givens)` 重建，不可直接傳遞挖洞過程中的 Board 物件
+
 ### 4.4 `game.py`
 
 ```python

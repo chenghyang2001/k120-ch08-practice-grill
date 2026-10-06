@@ -22,3 +22,6 @@ core
 *.swp
 .DS_Store
 Thumbs.db
+
+# Claude Code hook 暫存
+.claude/session-state.md
